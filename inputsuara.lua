@@ -1,5 +1,6 @@
 require "import"
 import "android.content.*"
+import "android.content.ClipData"
 import "android.speech.*"
 import "android.widget.*"
 import "android.os.Handler"
@@ -25,6 +26,9 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
+local CURRENT_VERSION = "v4.0"
+local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
+
 local PREF_NAME = "translator_voice_config"
 local PREF_KEY_ENGINE = "selected_translation_engine"
 local PREF_KEY_GROQ_API = "groq_api_key"
@@ -140,6 +144,135 @@ local function showSafeDialog(dialog)
         end
     end)
     dialog.show()
+end
+
+-- Fitur Periksa Pembaruan Versi Baru
+local function checkUpdate()
+    if not isConnected() then
+        showToast("Butuh koneksi internet untuk memeriksa versi")
+        if service and service.speak then service.speak("Butuh internet") end
+        return
+    end
+
+    showToast("Memeriksa versi baru...")
+    if service and service.speak then service.speak("Memeriksa versi baru") end
+
+    Thread(Runnable({
+        run = function()
+            local success = false
+            local remoteCode = nil
+
+            pcall(function()
+                local url = URL(UPDATE_URL)
+                local conn = url.openConnection()
+                conn.setRequestMethod("GET")
+                conn.setConnectTimeout(8000)
+                conn.setReadTimeout(12000)
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                conn.setRequestProperty("Cache-Control", "no-cache")
+
+                if conn.getResponseCode() == 200 then
+                    local reader = BufferedReader(InputStreamReader(conn.getInputStream(), "UTF-8"))
+                    local lines = {}
+                    local line = reader.readLine()
+                    while line ~= nil do
+                        table.insert(lines, line)
+                        line = reader.readLine()
+                    end
+                    reader.close()
+                    remoteCode = table.concat(lines, "\n")
+                    success = true
+                end
+                conn.disconnect()
+            end)
+
+            local handler = Handler(Looper.getMainLooper())
+            handler.post(Runnable({
+                run = function()
+                    if success and remoteCode and #remoteCode > 0 then
+                        -- Cari penanda versi di kode remote
+                        local remoteVer = remoteCode:match('CURRENT_VERSION%s*=%s*["\']([^"\']+)["\']')
+                        if not remoteVer then
+                            remoteVer = remoteCode:match('[Vv]ersi%s*([%d%.]+)') or remoteCode:match('v([%d%.]+)')
+                        end
+
+                        local hasUpdate = false
+                        if remoteVer then
+                            if remoteVer ~= CURRENT_VERSION then
+                                hasUpdate = true
+                            end
+                        else
+                            remoteVer = "Tersedia di Server"
+                            hasUpdate = true
+                        end
+
+                        local builder = AlertDialog.Builder(konteks)
+                        if hasUpdate then
+                            builder.setTitle("Pembaruan Ditemukan!")
+                            builder.setMessage("Versi saat ini: " .. CURRENT_VERSION .. "\nVersi baru: " .. tostring(remoteVer) .. "\n\nApakah Anda ingin memperbarui script ini sekarang?")
+                            
+                            builder.setPositiveButton("Perbarui Sekarang", DialogInterface.OnClickListener({
+                                onClick = function(dialog, which)
+                                    local scriptPath = nil
+                                    pcall(function()
+                                        local info = debug.getinfo(1, "S")
+                                        if info and info.source and info.source:sub(1, 1) == "@" then
+                                            scriptPath = info.source:sub(2)
+                                        end
+                                    end)
+
+                                    local fileSaved = false
+                                    if scriptPath then
+                                        pcall(function()
+                                            local f = io.open(scriptPath, "w")
+                                            if f then
+                                                f:write(remoteCode)
+                                                f:close()
+                                                fileSaved = true
+                                            end
+                                        end)
+                                    end
+
+                                    -- Selalu salin ke clipboard sebagai cadangan
+                                    pcall(function()
+                                        local cm = konteks.getSystemService(Context.CLIPBOARD_SERVICE)
+                                        local cd = ClipData.newPlainText("Script Update", remoteCode)
+                                        cm.setPrimaryClip(cd)
+                                    end)
+
+                                    if fileSaved then
+                                        showToast("Script berhasil diperbarui ke " .. tostring(remoteVer))
+                                        if service and service.speak then service.speak("Script berhasil diperbarui") end
+                                    else
+                                        showToast("Script baru telah disalin ke papan klip")
+                                        if service and service.speak then service.speak("Script baru disalin ke papan klip") end
+                                    end
+                                end
+                            }))
+
+                            builder.setNegativeButton("Batal", DialogInterface.OnClickListener({
+                                onClick = function(dialog, which)
+                                    dialog.dismiss()
+                                end
+                            }))
+                        else
+                            builder.setTitle("Versi Terbaru")
+                            builder.setMessage("Script Anda sudah menggunakan versi paling baru (" .. CURRENT_VERSION .. "). Tidak ada pembaruan.")
+                            builder.setPositiveButton("OK", DialogInterface.OnClickListener({
+                                onClick = function(dialog, which)
+                                    dialog.dismiss()
+                                end
+                            }))
+                        end
+                        showSafeDialog(builder.create())
+                    else
+                        showToast("Gagal memeriksa versi baru dari server")
+                        if service and service.speak then service.speak("Gagal memeriksa pembaruan") end
+                    end
+                end
+            }))
+        end
+    })).start()
 end
 
 -- Dialog Pilihan Mesin Terjemahan
@@ -317,7 +450,7 @@ local function showMainMenu()
     handler.post(Runnable({
         run = function()
             local builder = AlertDialog.Builder(konteks)
-            builder.setTitle("Pengaturan Dikte & Terjemahan")
+            builder.setTitle("Dikte Suara (" .. CURRENT_VERSION .. ")")
 
             local layout = LinearLayout(konteks)
             layout.setOrientation(LinearLayout.VERTICAL)
@@ -334,6 +467,10 @@ local function showMainMenu()
             local btnGemini = Button(konteks)
             btnGemini.setText("Pengaturan Kunci API Gemini")
             layout.addView(btnGemini)
+
+            local btnUpdate = Button(konteks)
+            btnUpdate.setText("Periksa Versi Baru")
+            layout.addView(btnUpdate)
 
             builder.setView(layout)
             builder.setNegativeButton("Tutup", DialogInterface.OnClickListener({
@@ -362,6 +499,7 @@ local function showMainMenu()
             bindClick(btnEngine, showEngineSelectionDialog)
             bindClick(btnGroq, showGroqApiKeyDialog)
             bindClick(btnGemini, showGeminiApiKeyDialog)
+            bindClick(btnUpdate, checkUpdate)
 
             showSafeDialog(dlg)
         end
@@ -870,7 +1008,6 @@ local function tryGeminiModel(modelIndex, promptText, apiKey, callback)
                     if isSuccess and resultText then
                         callback(true, resultText)
                     else
-                        -- Otomatis berpindah mencoba model Flash / Flash-Lite berikutnya
                         tryGeminiModel(modelIndex + 1, promptText, apiKey, callback)
                     end
                 end
