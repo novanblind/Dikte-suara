@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v5.0"
+local CURRENT_VERSION = "v6.0"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -34,29 +34,20 @@ local PREF_KEY_ENGINE = "selected_translation_engine"
 local PREF_KEY_GROQ_API = "groq_api_key"
 local PREF_KEY_GEMINI_API = "gemini_api_key"
 
--- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia (diurutkan berdasarkan prioritas kehalusan bahasa)
+-- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia
 local GROQ_TRANSLATION_MODELS = {
-    "qwen/qwen3.8-27b",    -- Prioritas 1: Bahasa Indonesia paling natural & luwes
+    "qwen/qwen3.8-27b",    -- Prioritas 1: Paling natural & luwes
     "openai/gpt-oss-20b",  -- Prioritas 2: Respons cepat & tata bahasa baku rapi
     "openai/gpt-oss-120b"  -- Prioritas 3: Parameter terbesar, akurasi tinggi kalimat kompleks
 }
 
--- Model Gemini khusus varian Flash dan Flash-Lite untuk terjemahan cepat & hemat kuota
+-- Model Gemini khusus varian Flash-Lite (Super cepat, latensi terendah, & hemat kuota)
 local GEMINI_TRANSLATION_MODELS = {
-    "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-flash-latest",
     "gemini-flash-lite-latest",
-    "gemini-3-flash-preview",
     "gemini-3.1-flash-lite",
     "gemini-3.1-flash-lite-preview",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-    "gemini-omni-flash-preview",
-    "gemini-omni-1.1-flash"
+    "gemini-3.5-flash-lite"
 }
 
 -- Pengelolaan Preferensi (SharedPreferences)
@@ -909,7 +900,7 @@ local function translateWithGroq(text, targetLang, callback)
 end
 
 ----------------------------------------------------------------
--- 3. Jalur Terjemahan Gemini AI (Fallback Otomatis Flash/Flash-Lite)
+-- 3. Jalur Terjemahan Gemini AI (Khusus Flash-Lite + Konfigurasi Suhu Rendah)
 ----------------------------------------------------------------
 local function tryGeminiModel(modelIndex, promptText, apiKey, callback)
     if modelIndex > #GEMINI_TRANSLATION_MODELS then
@@ -938,6 +929,12 @@ local function tryGeminiModel(modelIndex, promptText, apiKey, callback)
             contentObj.put("parts", parts)
             contents.put(contentObj)
             jsonPayload.put("contents", contents)
+
+            -- Mekanisme kontrol suhu (temperature) agar hasil terjemahan presisi dan taat aturan
+            local genConfig = JSONObject()
+            genConfig.put("temperature", 0.2)
+            genConfig.put("maxOutputTokens", 1000)
+            jsonPayload.put("generationConfig", genConfig)
 
             local postData = String(jsonPayload.toString()).getBytes("UTF-8")
 
@@ -1049,7 +1046,7 @@ local function translateWithGemini(text, targetLang, callback)
             cleanTrans = cleanTrans:gsub("^%s+", ""):gsub("%s+$", "")
             callback(cleanTrans)
         else
-            showToast("Semua model Gemini Flash gagal, beralih ke Google")
+            showToast("Semua model Gemini Flash-Lite gagal, beralih ke Google")
             translateWithGoogle(text, targetLang, callback)
         end
     end)
