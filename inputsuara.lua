@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v4.0"
+local CURRENT_VERSION = "v5.0"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -34,13 +34,11 @@ local PREF_KEY_ENGINE = "selected_translation_engine"
 local PREF_KEY_GROQ_API = "groq_api_key"
 local PREF_KEY_GEMINI_API = "gemini_api_key"
 
--- Model Groq pendukung terjemahan cepat
+-- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia (diurutkan berdasarkan prioritas kehalusan bahasa)
 local GROQ_TRANSLATION_MODELS = {
-    "groq/compound-mini",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3.8-27b",
-    "groq/compound",
-    "openai/gpt-oss-120b"
+    "qwen/qwen3.8-27b",    -- Prioritas 1: Bahasa Indonesia paling natural & luwes
+    "openai/gpt-oss-20b",  -- Prioritas 2: Respons cepat & tata bahasa baku rapi
+    "openai/gpt-oss-120b"  -- Prioritas 3: Parameter terbesar, akurasi tinggi kalimat kompleks
 }
 
 -- Model Gemini khusus varian Flash dan Flash-Lite untuk terjemahan cepat & hemat kuota
@@ -190,7 +188,6 @@ local function checkUpdate()
             handler.post(Runnable({
                 run = function()
                     if success and remoteCode and #remoteCode > 0 then
-                        -- Cari penanda versi di kode remote
                         local remoteVer = remoteCode:match('CURRENT_VERSION%s*=%s*["\']([^"\']+)["\']')
                         if not remoteVer then
                             remoteVer = remoteCode:match('[Vv]ersi%s*([%d%.]+)') or remoteCode:match('v([%d%.]+)')
@@ -233,7 +230,6 @@ local function checkUpdate()
                                         end)
                                     end
 
-                                    -- Selalu salin ke clipboard sebagai cadangan
                                     pcall(function()
                                         local cm = konteks.getSystemService(Context.CLIPBOARD_SERVICE)
                                         local cd = ClipData.newPlainText("Script Update", remoteCode)
@@ -763,7 +759,7 @@ local function translateWithGoogle(text, targetLang, callback)
 end
 
 ----------------------------------------------------------------
--- 2. Jalur Terjemahan Groq AI (Fallback Otomatis Antar-Model)
+-- 2. Jalur Terjemahan Groq AI (Fallback Otomatis 3 Model Aktif)
 ----------------------------------------------------------------
 local function tryGroqModel(modelIndex, promptText, customInstruction, apiKey, callback)
     if modelIndex > #GROQ_TRANSLATION_MODELS then
