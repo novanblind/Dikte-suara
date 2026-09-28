@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v6.0"
+local CURRENT_VERSION = "v6.1"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -135,6 +135,27 @@ local function showSafeDialog(dialog)
     dialog.show()
 end
 
+-- Pembanding versi: hanya true bila versi server benar-benar lebih tinggi
+local function parseVersion(v)
+    local parts = {}
+    for num in tostring(v):gmatch("%d+") do
+        table.insert(parts, tonumber(num))
+    end
+    return parts
+end
+
+local function isNewerVersion(remote, current)
+    local r = parseVersion(remote)
+    local c = parseVersion(current)
+    for i = 1, math.max(#r, #c) do
+        local rv = r[i] or 0
+        local cv = c[i] or 0
+        if rv > cv then return true end
+        if rv < cv then return false end
+    end
+    return false
+end
+
 -- Fitur Periksa Pembaruan Versi Baru
 local function checkUpdate()
     if not isConnected() then
@@ -186,7 +207,7 @@ local function checkUpdate()
 
                         local hasUpdate = false
                         if remoteVer then
-                            if remoteVer ~= CURRENT_VERSION then
+                            if isNewerVersion(remoteVer, CURRENT_VERSION) then
                                 hasUpdate = true
                             end
                         else
@@ -750,7 +771,7 @@ local function translateWithGoogle(text, targetLang, callback)
 end
 
 ----------------------------------------------------------------
--- 2. Jalur Terjemahan Groq AI (Fallback Otomatis 3 Model Aktif)
+-- 2. Jalur Terjemahan Groq AI (Fallback antar 3 model Groq saja, tanpa pindah ke Google)
 ----------------------------------------------------------------
 local function tryGroqModel(modelIndex, promptText, customInstruction, apiKey, callback)
     if modelIndex > #GROQ_TRANSLATION_MODELS then
@@ -859,9 +880,9 @@ end
 local function translateWithGroq(text, targetLang, callback)
     local apiKey = getGroqApiKey()
     if not apiKey or apiKey == "" then
-        showToast("Kunci API Groq kosong, beralih ke Google")
+        showToast("Kunci API Groq kosong")
         if service and service.speak then service.speak("Kunci API Groq kosong") end
-        translateWithGoogle(text, targetLang, callback)
+        callback(text)
         return
     end
 
@@ -893,14 +914,15 @@ local function translateWithGroq(text, targetLang, callback)
             cleanTrans = cleanTrans:gsub("^%s+", ""):gsub("%s+$", "")
             callback(cleanTrans)
         else
-            showToast("Groq bermasalah, beralih ke Google")
-            translateWithGoogle(text, targetLang, callback)
+            showToast("Semua model Groq gagal menerjemahkan")
+            if service and service.speak then service.speak("Groq gagal menerjemahkan") end
+            callback(text)
         end
     end)
 end
 
 ----------------------------------------------------------------
--- 3. Jalur Terjemahan Gemini AI (Khusus Flash-Lite + Konfigurasi Suhu Rendah)
+-- 3. Jalur Terjemahan Gemini AI (Fallback antar model Flash-Lite saja, tanpa pindah ke Google)
 ----------------------------------------------------------------
 local function tryGeminiModel(modelIndex, promptText, apiKey, callback)
     if modelIndex > #GEMINI_TRANSLATION_MODELS then
@@ -1012,9 +1034,9 @@ end
 local function translateWithGemini(text, targetLang, callback)
     local apiKey = getGeminiApiKey()
     if not apiKey or apiKey == "" then
-        showToast("Kunci API Gemini kosong, beralih ke Google")
+        showToast("Kunci API Gemini kosong")
         if service and service.speak then service.speak("Kunci API Gemini kosong") end
-        translateWithGoogle(text, targetLang, callback)
+        callback(text)
         return
     end
 
@@ -1046,8 +1068,9 @@ local function translateWithGemini(text, targetLang, callback)
             cleanTrans = cleanTrans:gsub("^%s+", ""):gsub("%s+$", "")
             callback(cleanTrans)
         else
-            showToast("Semua model Gemini Flash-Lite gagal, beralih ke Google")
-            translateWithGoogle(text, targetLang, callback)
+            showToast("Semua model Gemini gagal menerjemahkan")
+            if service and service.speak then service.speak("Gemini gagal menerjemahkan") end
+            callback(text)
         end
     end)
 end
