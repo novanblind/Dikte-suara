@@ -26,13 +26,14 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v6.1"
+local CURRENT_VERSION = "v6.6"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
 local PREF_KEY_ENGINE = "selected_translation_engine"
 local PREF_KEY_GROQ_API = "groq_api_key"
 local PREF_KEY_GEMINI_API = "gemini_api_key"
+local PREF_KEY_VOICE_MODE = "voice_input_mode"
 
 -- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia
 local GROQ_TRANSLATION_MODELS = {
@@ -101,6 +102,30 @@ local function saveGeminiApiKey(newKey)
         local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         local editor = sp.edit()
         editor.putString(PREF_KEY_GEMINI_API, tostring(newKey))
+        editor.apply()
+    end)
+end
+
+-- Mode Input Suara: "Otomatis" (ikut koneksi), "Online", atau "Offline"
+local VOICE_MODES = {"Otomatis", "Online", "Offline"}
+
+local function getVoiceMode()
+    local mode = "Otomatis"
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        mode = sp.getString(PREF_KEY_VOICE_MODE, "Otomatis")
+    end)
+    for _, v in ipairs(VOICE_MODES) do
+        if v == mode then return mode end
+    end
+    return "Otomatis"
+end
+
+local function saveVoiceMode(mode)
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        local editor = sp.edit()
+        editor.putString(PREF_KEY_VOICE_MODE, tostring(mode))
         editor.apply()
     end)
 end
@@ -328,6 +353,55 @@ local function showEngineSelectionDialog()
     }))
 end
 
+-- Dialog Pilihan Mode Input Suara
+local function showVoiceModeDialog()
+    local handler = Handler(Looper.getMainLooper())
+    handler.post(Runnable({
+        run = function()
+            local labels = {
+                "Otomatis (ikuti internet)",
+                "Online",
+                "Offline"
+            }
+            local current = getVoiceMode()
+            local selectedIndex = 0
+            for i, v in ipairs(VOICE_MODES) do
+                if v == current then
+                    selectedIndex = i - 1
+                    break
+                end
+            end
+
+            local chosen = current
+            local builder = AlertDialog.Builder(konteks)
+            builder.setTitle("Pilih Mode Input Suara")
+            builder.setSingleChoiceItems(labels, selectedIndex, DialogInterface.OnClickListener({
+                onClick = function(dialog, which)
+                    chosen = VOICE_MODES[which + 1]
+                end
+            }))
+
+            builder.setPositiveButton("Simpan", DialogInterface.OnClickListener({
+                onClick = function(dialog, which)
+                    saveVoiceMode(chosen)
+                    showToast("Mode input suara diatur ke: " .. chosen)
+                    if service and service.speak then
+                        service.speak("Mode input suara " .. chosen)
+                    end
+                end
+            }))
+
+            builder.setNegativeButton("Batal", DialogInterface.OnClickListener({
+                onClick = function(dialog, which)
+                    dialog.dismiss()
+                end
+            }))
+
+            showSafeDialog(builder.create())
+        end
+    }))
+end
+
 -- Dialog Pengaturan Kunci API Groq
 local function showGroqApiKeyDialog()
     local handler = Handler(Looper.getMainLooper())
@@ -468,6 +542,10 @@ local function showMainMenu()
             btnEngine.setText("Pilihan Mesin: " .. getEngine())
             layout.addView(btnEngine)
 
+            local btnVoice = Button(konteks)
+            btnVoice.setText("Mode Input Suara: " .. getVoiceMode())
+            layout.addView(btnVoice)
+
             local btnGroq = Button(konteks)
             btnGroq.setText("Pengaturan Kunci API Groq")
             layout.addView(btnGroq)
@@ -505,6 +583,7 @@ local function showMainMenu()
             end
 
             bindClick(btnEngine, showEngineSelectionDialog)
+            bindClick(btnVoice, showVoiceModeDialog)
             bindClick(btnGroq, showGroqApiKeyDialog)
             bindClick(btnGemini, showGeminiApiKeyDialog)
             bindClick(btnUpdate, checkUpdate)
@@ -1107,11 +1186,17 @@ local function startListening()
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "id-ID")
 
-            if isConnected() then
-                intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            local voiceMode = getVoiceMode()
+            local preferOffline
+            if voiceMode == "Online" then
+                preferOffline = false
+            elseif voiceMode == "Offline" then
+                preferOffline = true
             else
-                intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                -- Otomatis: ikuti ada atau tidaknya internet
+                preferOffline = not isConnected()
             end
+            intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
 
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
