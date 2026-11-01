@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v6.6"
+local CURRENT_VERSION = "v6.9"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -669,6 +669,58 @@ local punctuationMap = {
     {"slash", "/"}, {"enter", "\n"}, {"titik", "."}, {"koma", ","}, {"plus", "+"}
 }
 
+-- Penanda sesi: true bila mesin suara yang dipakai mode offline
+local sessionOffline = false
+
+-- Kata "titik" yang bukan tanda baca bila diikuti kata-kata ini (mis. "titik temu")
+local titikBukanTanda = {
+    temu = true, api = true, didih = true, beku = true, koordinat = true,
+    lemah = true, balik = true, tolak = true, tengah = true, awal = true,
+    akhir = true, pusat = true, nol = true, kumpul = true, henti = true,
+    lokasi = true, fokus = true, kritis = true, buta = true, tumpu = true,
+    simpul = true, embun = true, leleh = true, jenuh = true, terang = true
+}
+
+local function isWordChar(c)
+    if c == nil or c == "" then return false end
+    return c:match("%w") ~= nil or c:byte() >= 128
+end
+
+-- Ganti kata utuh (bukan bagian dari kata lain) dengan tanda baca.
+-- Spasi tepat sebelum kata ikut dibuang agar tanda menempel ke kata sebelumnya.
+local function replaceWholeWord(text, target, replacement)
+    local lowerText = text:lower()
+    local lowerTarget = target:lower()
+    local result = ""
+    local lastIndex = 1
+    local searchPos = 1
+    while true do
+        local s, e = lowerText:find(lowerTarget, searchPos, true)
+        if not s then break end
+        local before = (s > 1) and lowerText:sub(s - 1, s - 1) or ""
+        local after = lowerText:sub(e + 1, e + 1)
+        local okBoundary = (not isWordChar(before)) and (not isWordChar(after))
+        if okBoundary and lowerTarget == "titik" then
+            local nextWord = lowerText:match("^%s+(%w+)", e + 1)
+            if nextWord and titikBukanTanda[nextWord] then
+                okBoundary = false
+            end
+        end
+        if okBoundary then
+            local cutFrom = s
+            if before == " " and (s - 1) >= lastIndex then
+                cutFrom = s - 1
+            end
+            result = result .. text:sub(lastIndex, cutFrom - 1) .. replacement
+            lastIndex = e + 1
+            searchPos = e + 1
+        else
+            searchPos = s + 1
+        end
+    end
+    return result .. text:sub(lastIndex)
+end
+
 local function destroyRecognizer()
     _G._IS_SPEECH_ACTIVE = false
     if recognizerInstance then
@@ -715,9 +767,13 @@ local function formatText(text)
         end
     end
 
-    for _, item in ipairs(punctuationMap) do
-        text = replaceAllCaseInsensitive(text, " " .. item[1], item[2])
-        text = replaceAllCaseInsensitive(text, item[1], item[2])
+    -- Ganti kata perintah dengan tanda baca (per kata utuh).
+    -- Hanya berlaku saat mode offline; saat online teks dari mesin dibiarkan apa adanya.
+    -- Tanda yang diucapkan berulang ditulis sesuai jumlah ucapan (tanpa dirapikan).
+    if sessionOffline then
+        for _, item in ipairs(punctuationMap) do
+            text = replaceWholeWord(text, item[1], item[2])
+        end
     end
 
     text = text:gsub("%s+([%,%.%?!%:%;%)%]%}%_])", "%1")
@@ -728,7 +784,6 @@ local function formatText(text)
 
     text = text:gsub("^%s*%l", string.upper)
     text = text:gsub("([%.%?!]%s*)(%l)", function(p, c) return p .. c:upper() end)
-    text = text:gsub("(,%s*)(%u)", function(p, c) return p .. c:lower() end)
     return text:gsub("%s+$", "")
 end
 
@@ -1197,6 +1252,7 @@ local function startListening()
                 preferOffline = not isConnected()
             end
             intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
+            sessionOffline = preferOffline
 
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
