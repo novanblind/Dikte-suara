@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v6.9"
+local CURRENT_VERSION = "v7.2"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -34,6 +34,7 @@ local PREF_KEY_ENGINE = "selected_translation_engine"
 local PREF_KEY_GROQ_API = "groq_api_key"
 local PREF_KEY_GEMINI_API = "gemini_api_key"
 local PREF_KEY_VOICE_MODE = "voice_input_mode"
+local PREF_KEY_TRANSLATE_ON = "translation_feature_enabled"
 
 -- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia
 local GROQ_TRANSLATION_MODELS = {
@@ -66,6 +67,25 @@ local function saveEngine(engine)
         local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         local editor = sp.edit()
         editor.putString(PREF_KEY_ENGINE, tostring(engine))
+        editor.apply()
+    end)
+end
+
+-- Fitur terjemahan aktif atau tidak (bawaan: aktif / tercentang)
+local function isTranslationEnabled()
+    local enabled = true
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        enabled = sp.getBoolean(PREF_KEY_TRANSLATE_ON, true)
+    end)
+    return enabled
+end
+
+local function saveTranslationEnabled(value)
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        local editor = sp.edit()
+        editor.putBoolean(PREF_KEY_TRANSLATE_ON, value and true or false)
         editor.apply()
     end)
 end
@@ -545,6 +565,20 @@ local function showMainMenu()
             local btnVoice = Button(konteks)
             btnVoice.setText("Mode Input Suara: " .. getVoiceMode())
             layout.addView(btnVoice)
+
+            local cbTranslate = CheckBox(konteks)
+            cbTranslate.setText("Fitur terjemahan")
+            cbTranslate.setChecked(isTranslationEnabled())
+            pcall(function()
+                cbTranslate.setOnClickListener(View.OnClickListener({
+                    onClick = function(v)
+                        local on = cbTranslate.isChecked()
+                        saveTranslationEnabled(on)
+                        showToast(on and "Fitur terjemahan aktif" or "Fitur terjemahan nonaktif")
+                    end
+                }))
+            end)
+            layout.addView(cbTranslate)
 
             local btnGroq = Button(konteks)
             btnGroq.setText("Pengaturan Kunci API Groq")
@@ -1313,7 +1347,7 @@ local function startListening()
                             end
                         end
 
-                        if lastS and lastS > 1 then
+                        if isTranslationEnabled() and lastS and lastS > 1 then
                             local textBefore = spokenText:sub(1, lastS - 1)
                             if textBefore:match("%S") then
                                 local textAfter = lowerSpoken:sub(lastE + 1)
