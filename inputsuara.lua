@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v7.2"
+local CURRENT_VERSION = "v7.6"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -35,6 +35,8 @@ local PREF_KEY_GROQ_API = "groq_api_key"
 local PREF_KEY_GEMINI_API = "gemini_api_key"
 local PREF_KEY_VOICE_MODE = "voice_input_mode"
 local PREF_KEY_TRANSLATE_ON = "translation_feature_enabled"
+local PREF_KEY_AUTO_TR_ON = "auto_translate_dialog_enabled"
+local PREF_KEY_AUTO_TR_LANG = "auto_translate_dialog_lang"
 
 -- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia
 local GROQ_TRANSLATION_MODELS = {
@@ -146,6 +148,43 @@ local function saveVoiceMode(mode)
         local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         local editor = sp.edit()
         editor.putString(PREF_KEY_VOICE_MODE, tostring(mode))
+        editor.apply()
+    end)
+end
+
+-- Terjemahan otomatis di dalam dialog menu (bawaan: nonaktif, bahasa hasil: Inggris)
+local function isAutoTranslateEnabled()
+    local enabled = false
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        enabled = sp.getBoolean(PREF_KEY_AUTO_TR_ON, false)
+    end)
+    return enabled
+end
+
+local function saveAutoTranslateEnabled(value)
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        local editor = sp.edit()
+        editor.putBoolean(PREF_KEY_AUTO_TR_ON, value and true or false)
+        editor.apply()
+    end)
+end
+
+local function getAutoTranslateLang()
+    local code = "en"
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        code = sp.getString(PREF_KEY_AUTO_TR_LANG, "en")
+    end)
+    return (code and code ~= "") and code or "en"
+end
+
+local function saveAutoTranslateLang(code)
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        local editor = sp.edit()
+        editor.putString(PREF_KEY_AUTO_TR_LANG, tostring(code))
         editor.apply()
     end)
 end
@@ -326,6 +365,121 @@ local function checkUpdate()
             }))
         end
     })).start()
+end
+
+local languages = {
+    ["aceh"] = "ace", ["bali"] = "ban", ["banjar"] = "bjn", ["batak"] = "bbc",
+    ["batak toba"] = "bbc", ["batak karo"] = "btx", ["batak simalungun"] = "bts",
+    ["betawi"] = "bew", ["bugis"] = "bug", ["dayak"] = "day", ["jawa"] = "jw",
+    ["lampung"] = "ljp", ["madura"] = "mad", ["makassar"] = "mak", ["manado"] = "xmm",
+    ["melayu"] = "ms", ["minang"] = "min", ["minangkabau"] = "min", ["palembang"] = "plm",
+    ["papua"] = "pmy", ["sasak"] = "sas", ["sunda"] = "su", ["toraja"] = "sda",
+    ["afrikaans"] = "af", ["albania"] = "sq", ["amharik"] = "am", ["arab"] = "ar",
+    ["armenia"] = "hy", ["azerbaijan"] = "az", ["basque"] = "eu", ["belanda"] = "nl",
+    ["belarussia"] = "be", ["bengali"] = "bn", ["bosnia"] = "bs", ["bulgaria"] = "bg",
+    ["burma"] = "my", ["ceko"] = "cs", ["china"] = "zh-CN", ["mandarin"] = "zh-CN",
+    ["taiwan"] = "zh-TW", ["denmark"] = "da", ["esperanto"] = "eo", ["estonia"] = "et",
+    ["finlandia"] = "fi", ["galicia"] = "gl", ["georgia"] = "ka", ["gujarati"] = "gu",
+    ["haiti"] = "ht", ["hausa"] = "ha", ["hawaii"] = "haw", ["hindi"] = "hi",
+    ["hmong"] = "hmn", ["hungaria"] = "hu", ["ibrani"] = "he", ["igbo"] = "ig",
+    ["indonesia"] = "id", ["inggris"] = "en", ["irlandia"] = "ga", ["islandia"] = "is",
+    ["italia"] = "it", ["jepang"] = "ja", ["jerman"] = "de", ["kannada"] = "kn",
+    ["katalan"] = "ca", ["kazakh"] = "kk", ["khmer"] = "km", ["korea"] = "ko",
+    ["kroasia"] = "hr", ["kurdi"] = "ku", ["laos"] = "lo", ["latin"] = "la",
+    ["latvia"] = "lv", ["lithuania"] = "lt", ["luxembourg"] = "lb", ["makedonia"] = "mk",
+    ["madagaskar"] = "mg", ["malayalam"] = "ml", ["malaysia"] = "ms", ["malta"] = "mt",
+    ["maori"] = "mi", ["marathi"] = "mr", ["mongolia"] = "mn", ["nepal"] = "ne",
+    ["norwegia"] = "no", ["pashto"] = "ps", ["persia"] = "fa", ["polandia"] = "pl",
+    ["portugis"] = "pt", ["prancis"] = "fr", ["punjabi"] = "pa", ["rumania"] = "ro",
+    ["rusia"] = "ru", ["samoa"] = "sm", ["serbia"] = "sr", ["sesotho"] = "st",
+    ["shona"] = "sn", ["sindhi"] = "sd", ["sinhala"] = "si", ["slovakia"] = "sk",
+    ["slovenia"] = "sl", ["somalia"] = "so", ["spanyol"] = "es", ["swahili"] = "sw",
+    ["swedia"] = "sv", ["tagalog"] = "tl", ["tajik"] = "tg", ["tamil"] = "ta",
+    ["telugu"] = "te", ["thai"] = "th", ["turki"] = "tr", ["ukraina"] = "uk",
+    ["urdu"] = "ur", ["uzbek"] = "uz", ["vietnam"] = "vi", ["wales"] = "cy",
+    ["xhosa"] = "xh", ["yiddish"] = "yi", ["yoruba"] = "yo", ["yunani"] = "el",
+    ["zulu"] = "zu"
+}
+
+-- Daftar bahasa hasil terjemahan (satu nama per kode, urut abjad)
+local function titleCase(name)
+    return (name:gsub("(%a)([%w]*)", function(a, b) return a:upper() .. b end))
+end
+
+local langList = {}   -- { {name=, code=}, ... }
+local function buildLangList()
+    local names = {}
+    for name, _ in pairs(languages) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    local usedCode = {}
+    for _, name in ipairs(names) do
+        local code = languages[name]
+        if not usedCode[code] then
+            usedCode[code] = true
+            table.insert(langList, { name = titleCase(name), code = code })
+        end
+    end
+end
+buildLangList()
+
+local function langNameFromCode(code)
+    for _, item in ipairs(langList) do
+        if item.code == code then return item.name end
+    end
+    return code
+end
+
+-- Penyambung ke fungsi yang didefinisikan belakangan
+local showMainMenu
+
+-- Dialog Pilihan Bahasa Hasil Terjemahan Otomatis
+local function showAutoLangDialog()
+    local handler = Handler(Looper.getMainLooper())
+    handler.post(Runnable({
+        run = function()
+            local labels = {}
+            local current = getAutoTranslateLang()
+            local selectedIndex = 0
+            for i, item in ipairs(langList) do
+                labels[i] = item.name
+                if item.code == current then
+                    selectedIndex = i - 1
+                end
+            end
+
+            local chosen = current
+            local builder = AlertDialog.Builder(konteks)
+            builder.setTitle("Bahasa Hasil Terjemahan")
+            builder.setSingleChoiceItems(labels, selectedIndex, DialogInterface.OnClickListener({
+                onClick = function(dialog, which)
+                    chosen = langList[which + 1].code
+                end
+            }))
+
+            builder.setPositiveButton("Simpan", DialogInterface.OnClickListener({
+                onClick = function(dialog, which)
+                    saveAutoTranslateLang(chosen)
+                    local nm = langNameFromCode(chosen)
+                    showToast("Bahasa hasil terjemahan: " .. nm)
+                    if service and service.speak then
+                        service.speak("Bahasa hasil terjemahan " .. nm)
+                    end
+                    showMainMenu()
+                end
+            }))
+
+            builder.setNegativeButton("Batal", DialogInterface.OnClickListener({
+                onClick = function(dialog, which)
+                    dialog.dismiss()
+                    showMainMenu()
+                end
+            }))
+
+            showSafeDialog(builder.create())
+        end
+    }))
 end
 
 -- Dialog Pilihan Mesin Terjemahan
@@ -547,7 +701,7 @@ local function showGeminiApiKeyDialog()
 end
 
 -- Dialog Menu Utama
-local function showMainMenu()
+function showMainMenu()
     local handler = Handler(Looper.getMainLooper())
     handler.post(Runnable({
         run = function()
@@ -580,6 +734,15 @@ local function showMainMenu()
             end)
             layout.addView(cbTranslate)
 
+            local cbAuto = CheckBox(konteks)
+            cbAuto.setText("Terjemahkan langsung")
+            cbAuto.setChecked(isAutoTranslateEnabled())
+            layout.addView(cbAuto)
+
+            local btnLang = Button(konteks)
+            btnLang.setText("Bahasa Hasil Terjemahan: " .. langNameFromCode(getAutoTranslateLang()))
+            layout.addView(btnLang)
+
             local btnGroq = Button(konteks)
             btnGroq.setText("Pengaturan Kunci API Groq")
             layout.addView(btnGroq)
@@ -592,7 +755,9 @@ local function showMainMenu()
             btnUpdate.setText("Periksa Versi Baru")
             layout.addView(btnUpdate)
 
-            builder.setView(layout)
+            local scroll = ScrollView(konteks)
+            scroll.addView(layout)
+            builder.setView(scroll)
             builder.setNegativeButton("Tutup", DialogInterface.OnClickListener({
                 onClick = function(dialog, which)
                     dialog.dismiss()
@@ -621,67 +786,28 @@ local function showMainMenu()
             bindClick(btnGroq, showGroqApiKeyDialog)
             bindClick(btnGemini, showGeminiApiKeyDialog)
             bindClick(btnUpdate, checkUpdate)
+            bindClick(btnLang, showAutoLangDialog)
+
+            pcall(function()
+                cbAuto.setOnClickListener(View.OnClickListener({
+                    onClick = function(v)
+                        local on = cbAuto.isChecked()
+                        saveAutoTranslateEnabled(on)
+                        if on then
+                            showToast("Terjemahkan langsung aktif, bahasa: " .. langNameFromCode(getAutoTranslateLang()))
+                        else
+                            showToast("Terjemahkan langsung nonaktif")
+                        end
+                    end
+                }))
+            end)
 
             showSafeDialog(dlg)
         end
     }))
 end
 
--- Periksa ketersediaan kolom ketik di layar
-local currentEditNode = nil
-if service and service.getEditText then
-    currentEditNode = service.getEditText()
-end
-
-if not currentEditNode then
-    _G._IS_SPEECH_ACTIVE = false
-    showMainMenu()
-    return true
-end
-
--- Debounce & Lock Mic
-local now = System.currentTimeMillis()
-if _G._IS_SPEECH_ACTIVE or (_G._LAST_SPEECH_TIME and (now - _G._LAST_SPEECH_TIME < 1500)) then
-    return true
-end
-_G._LAST_SPEECH_TIME = now
-_G._IS_SPEECH_ACTIVE = true
-
 local recognizerInstance = nil
-
-local languages = {
-    ["aceh"] = "ace", ["bali"] = "ban", ["banjar"] = "bjn", ["batak"] = "bbc",
-    ["batak toba"] = "bbc", ["batak karo"] = "btx", ["batak simalungun"] = "bts",
-    ["betawi"] = "bew", ["bugis"] = "bug", ["dayak"] = "day", ["jawa"] = "jw",
-    ["lampung"] = "ljp", ["madura"] = "mad", ["makassar"] = "mak", ["manado"] = "xmm",
-    ["melayu"] = "ms", ["minang"] = "min", ["minangkabau"] = "min", ["palembang"] = "plm",
-    ["papua"] = "pmy", ["sasak"] = "sas", ["sunda"] = "su", ["toraja"] = "sda",
-    ["afrikaans"] = "af", ["albania"] = "sq", ["amharik"] = "am", ["arab"] = "ar",
-    ["armenia"] = "hy", ["azerbaijan"] = "az", ["basque"] = "eu", ["belanda"] = "nl",
-    ["belarussia"] = "be", ["bengali"] = "bn", ["bosnia"] = "bs", ["bulgaria"] = "bg",
-    ["burma"] = "my", ["ceko"] = "cs", ["china"] = "zh-CN", ["mandarin"] = "zh-CN",
-    ["taiwan"] = "zh-TW", ["denmark"] = "da", ["esperanto"] = "eo", ["estonia"] = "et",
-    ["finlandia"] = "fi", ["galicia"] = "gl", ["georgia"] = "ka", ["gujarati"] = "gu",
-    ["haiti"] = "ht", ["hausa"] = "ha", ["hawaii"] = "haw", ["hindi"] = "hi",
-    ["hmong"] = "hmn", ["hungaria"] = "hu", ["ibrani"] = "he", ["igbo"] = "ig",
-    ["indonesia"] = "id", ["inggris"] = "en", ["irlandia"] = "ga", ["islandia"] = "is",
-    ["italia"] = "it", ["jepang"] = "ja", ["jerman"] = "de", ["kannada"] = "kn",
-    ["katalan"] = "ca", ["kazakh"] = "kk", ["khmer"] = "km", ["korea"] = "ko",
-    ["kroasia"] = "hr", ["kurdi"] = "ku", ["laos"] = "lo", ["latin"] = "la",
-    ["latvia"] = "lv", ["lithuania"] = "lt", ["luxembourg"] = "lb", ["makedonia"] = "mk",
-    ["madagaskar"] = "mg", ["malayalam"] = "ml", ["malaysia"] = "ms", ["malta"] = "mt",
-    ["maori"] = "mi", ["marathi"] = "mr", ["mongolia"] = "mn", ["nepal"] = "ne",
-    ["norwegia"] = "no", ["pashto"] = "ps", ["persia"] = "fa", ["polandia"] = "pl",
-    ["portugis"] = "pt", ["prancis"] = "fr", ["punjabi"] = "pa", ["rumania"] = "ro",
-    ["rusia"] = "ru", ["samoa"] = "sm", ["serbia"] = "sr", ["sesotho"] = "st",
-    ["shona"] = "sn", ["sindhi"] = "sd", ["sinhala"] = "si", ["slovakia"] = "sk",
-    ["slovenia"] = "sl", ["somalia"] = "so", ["spanyol"] = "es", ["swahili"] = "sw",
-    ["swedia"] = "sv", ["tagalog"] = "tl", ["tajik"] = "tg", ["tamil"] = "ta",
-    ["telugu"] = "te", ["thai"] = "th", ["turki"] = "tr", ["ukraina"] = "uk",
-    ["urdu"] = "ur", ["uzbek"] = "uz", ["vietnam"] = "vi", ["wales"] = "cy",
-    ["xhosa"] = "xh", ["yiddish"] = "yi", ["yoruba"] = "yo", ["yunani"] = "el",
-    ["zulu"] = "zu"
-}
 
 local punctuationMap = {
     {"garis miring terbalik", "\\"}, {"buka kurung kurawal", "{"}, {"tutup kurung kurawal", "}"},
@@ -1362,6 +1488,12 @@ local function startListening()
                             end
                         end
 
+                        -- Terjemahkan langsung: bila aktif dan tidak ada perintah "terjemahkan [bahasa]",
+                        -- hasil ucapan diterjemahkan ke bahasa pilihan (bawaan Inggris)
+                        if not targetCode and isAutoTranslateEnabled() then
+                            targetCode = getAutoTranslateLang()
+                        end
+
                         -- Format tanda baca yang diucapkan
                         cleanText = formatText(cleanText)
 
@@ -1386,6 +1518,26 @@ local function startListening()
         end
     }))
 end
+
+-- Periksa ketersediaan kolom ketik di layar
+local currentEditNode = nil
+if service and service.getEditText then
+    currentEditNode = service.getEditText()
+end
+
+if not currentEditNode then
+    _G._IS_SPEECH_ACTIVE = false
+    showMainMenu()
+    return true
+end
+
+-- Debounce & Lock Mic
+local now = System.currentTimeMillis()
+if _G._IS_SPEECH_ACTIVE or (_G._LAST_SPEECH_TIME and (now - _G._LAST_SPEECH_TIME < 1500)) then
+    return true
+end
+_G._LAST_SPEECH_TIME = now
+_G._IS_SPEECH_ACTIVE = true
 
 startListening()
 return true
