@@ -26,7 +26,7 @@ import "org.json.JSONObject"
 import "org.json.JSONArray"
 
 local konteks = this or service
-local CURRENT_VERSION = "v7.6"
+local CURRENT_VERSION = "v7.11"
 local UPDATE_URL = "https://raw.githubusercontent.com/novanblind/Dikte-suara/main/inputsuara.lua"
 
 local PREF_NAME = "translator_voice_config"
@@ -37,6 +37,7 @@ local PREF_KEY_VOICE_MODE = "voice_input_mode"
 local PREF_KEY_TRANSLATE_ON = "translation_feature_enabled"
 local PREF_KEY_AUTO_TR_ON = "auto_translate_dialog_enabled"
 local PREF_KEY_AUTO_TR_LANG = "auto_translate_dialog_lang"
+local PREF_KEY_AUTO_PUNCT = "auto_punctuation_enabled"
 
 -- 3 Model Groq aktif pendukung terjemahan teks bahasa Indonesia
 local GROQ_TRANSLATION_MODELS = {
@@ -88,6 +89,25 @@ local function saveTranslationEnabled(value)
         local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         local editor = sp.edit()
         editor.putBoolean(PREF_KEY_TRANSLATE_ON, value and true or false)
+        editor.apply()
+    end)
+end
+
+-- Tanda baca otomatis (bawaan: mati / tidak tercentang)
+local function isAutoPunctEnabled()
+    local enabled = false
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        enabled = sp.getBoolean(PREF_KEY_AUTO_PUNCT, false)
+    end)
+    return enabled
+end
+
+local function saveAutoPunctEnabled(value)
+    pcall(function()
+        local sp = konteks.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        local editor = sp.edit()
+        editor.putBoolean(PREF_KEY_AUTO_PUNCT, value and true or false)
         editor.apply()
     end)
 end
@@ -720,6 +740,20 @@ function showMainMenu()
             btnVoice.setText("Mode Input Suara: " .. getVoiceMode())
             layout.addView(btnVoice)
 
+            local cbPunct = CheckBox(konteks)
+            cbPunct.setText("Tanda baca otomatis")
+            cbPunct.setChecked(isAutoPunctEnabled())
+            pcall(function()
+                cbPunct.setOnClickListener(View.OnClickListener({
+                    onClick = function(v)
+                        local on = cbPunct.isChecked()
+                        saveAutoPunctEnabled(on)
+                        showToast(on and "Tanda baca otomatis aktif" or "Tanda baca otomatis nonaktif")
+                    end
+                }))
+            end)
+            layout.addView(cbPunct)
+
             local cbTranslate = CheckBox(konteks)
             cbTranslate.setText("Fitur terjemahan")
             cbTranslate.setChecked(isTranslationEnabled())
@@ -808,6 +842,30 @@ function showMainMenu()
 end
 
 local recognizerInstance = nil
+
+-- Tanda baca otomatis: jeda bicara dicatat dari hasil sementara (partial)
+local PAUSE_MS = 900
+local lastPartial = ""
+local lastPartialAt = 0
+local pauseAt = {}
+
+local function countWords(t)
+    local n = 0
+    for _ in tostring(t):gmatch("%S+") do n = n + 1 end
+    return n
+end
+
+-- Catat jeda bicara: kata baru muncul setelah hasil sementara diam cukup lama
+local function notePartial(t)
+    local now = System.currentTimeMillis()
+    local n = countWords(t)
+    local prev = countWords(lastPartial)
+    if n > prev and prev > 0 and (now - lastPartialAt) > PAUSE_MS then
+        pauseAt[prev] = true -- koma sesudah kata ke-prev
+    end
+    if n ~= prev then lastPartialAt = now end
+    lastPartial = tostring(t):gsub("^%s+", ""):gsub("%s+$", "")
+end
 
 local punctuationMap = {
     {"garis miring terbalik", "\\"}, {"buka kurung kurawal", "{"}, {"tutup kurung kurawal", "}"},
@@ -906,6 +964,197 @@ local function replaceAllCaseInsensitive(text, target, replacement)
     result = result .. text:sub(lastIndex)
     return result
 end
+
+-- ================= Tanda baca otomatis =================
+local function setOf(list)
+    local r = {}
+    for _, v in ipairs(list) do r[v] = true end
+    return r
+end
+
+local TQ = setOf({"apa", "apakah", "siapa", "siapakah", "kapan", "kapankah",
+    "dimana", "kemana", "darimana", "mengapa", "kenapa", "bagaimana", "gimana",
+    "berapa", "mana", "manakah", "adakah", "bisakah", "bolehkah", "haruskah", "benarkah"})
+local TQ2 = setOf({"di mana", "ke mana", "dari mana", "yang mana"})
+-- kata depan yang bisa mendahului kata tanya: "untuk apa", "dengan siapa"
+local PREP = setOf({"untuk", "dengan", "dari", "sejak", "sampai", "hingga", "kepada",
+    "pada", "oleh", "buat", "bagi", "tentang", "seperti", "karena"})
+-- kata yang membuat kalimat jadi pernyataan: "saya tidak tahu apa yang terjadi"
+local KNOW = setOf({"tahu", "mengetahui", "ngerti", "mengerti", "paham", "lupa",
+    "ingat", "bingung", "penasaran", "entah", "terserah", "bilang", "katanya",
+    "menjelaskan", "menceritakan", "memberitahu"})
+local REPORT = setOf({"tanya", "bertanya", "menanyakan", "menanya"})
+-- pembuka kalimat yang biasanya bertanya langsung: "kamu tahu siapa dia"
+local ASKER = setOf({"kamu", "anda", "kau", "kalian", "bapak", "ibu", "kakak",
+    "mas", "mbak", "abang"})
+local THIRD = setOf({"dia", "ia", "mereka", "beliau"})
+
+local function tk(w)
+    return (w:gsub("[^%a%-]", ""):lower())
+end
+
+local function lastCh(w)
+    if w == "" then return " " end
+    return w:sub(-1)
+end
+
+local function inSet(chars, c)
+    return c ~= "" and chars:find(c, 1, true) ~= nil
+end
+
+-- 0 = bukan kata tanya, 1 = satu kata, 2 = dua kata ("di mana"); indeks mulai dari 1
+local function tqLen(t, i)
+    if i < 1 or i > #t then return 0 end
+    if i + 1 <= #t and TQ2[t[i] .. " " .. t[i + 1]] then return 2 end
+    if TQ[t[i]] then return 1 end
+    if #t[i] > 4 and t[i]:sub(-3) == "kah" then return 1 end
+    return 0
+end
+
+-- Kalimat baru yang berisi pertanyaan dimulai di kata ke-i
+local function startsTanya(t, i)
+    if tqLen(t, i) > 0 then return true end
+    return i <= #t and PREP[t[i]] == true and tqLen(t, i + 1) > 0
+end
+
+-- Apakah kalimat (kata ke-a sampai ke-b) pertanyaan
+local function isTanya(all, a, b)
+    local t = {}
+    for i = a, b do t[#t + 1] = all[i] end
+    local n = #t
+    if n == 0 then return false end
+    local f = nil
+    for i = 1, n do
+        if tqLen(t, i) > 0 then f = i break end
+    end
+    if f then
+        if f == 1 or (f == 2 and PREP[t[1]]) then return true end
+        for i = 1, f - 1 do
+            if KNOW[t[i]] and not ASKER[t[1]] then return false end
+            if REPORT[t[i]] and THIRD[t[1]] then return false end
+        end
+        local nx = f + tqLen(t, f)
+        if nx <= n then
+            local q = t[f]
+            if t[nx] == "pun" then return false end
+            if (t[nx] == "saja" or t[nx] == "aja")
+                and (q == "kapan" or q == "mana" or q == "dimana"
+                    or q == "kemana" or q == "bagaimana" or q == "di") then
+                return false
+            end
+        end
+        return true
+    end
+    local last = t[n]
+    if n > 1 and last == "kan" then return true end
+    if n > 2 and last == "bukan" then return true end
+    if n > 2 and t[n - 1] == "atau" and (last == "tidak" or last == "belum" or last == "bukan"
+        or last == "nggak" or last == "gak" or last == "enggak") then return true end
+    if n > 2 and last == "belum" then
+        for i = 1, n - 1 do if t[i] == "sudah" then return true end end
+    end
+    return false
+end
+
+-- Indeks kata terakhir salam di awal ("selamat siang" = 2, "halo" = 1), atau nil
+local function greetEnd(t)
+    if #t > 1 and t[1] == "selamat" and (t[2] == "pagi" or t[2] == "siang"
+        or t[2] == "sore" or t[2] == "malam" or t[2] == "petang") then return 2 end
+    if #t > 0 and (t[1] == "halo" or t[1] == "hai" or t[1] == "hallo"
+        or t[1] == "permisi" or t[1] == "assalamualaikum") then return 1 end
+    return nil
+end
+
+-- Satu baris: pecah jadi kalimat; tiap kalimat tanya berakhir "?", lainnya ".", jeda pendek jadi koma
+local function punctLine(s, ps)
+    local w = {}
+    for x in s:gmatch("%S+") do w[#w + 1] = x end
+    local n = #w
+    if n == 0 then return s end
+    local t = {}
+    for i = 1, n do t[i] = tk(w[i]) end
+    -- salam di awal (selamat siang, halo) diberi koma, bukan titik
+    local g = greetEnd(t)
+    if g and n > g and not ps[g] then ps[g] = true end
+    local brk = {}
+    local st = 1
+    for j = 1, n - 1 do
+        local c = lastCh(w[j])
+        local jeda = ps[j] or c == ","
+        if inSet(".?!", c) then
+            brk[j] = true
+            st = j + 1
+        elseif jeda and j ~= g and startsTanya(t, j + 1) then
+            brk[j] = true -- kata tanya membuka kalimat baru
+            st = j + 1
+        elseif jeda and j ~= g and (n - j) >= 3 and isTanya(t, st, j) then
+            brk[j] = true -- pertanyaan selesai di jeda, masih ada kalimat lain
+            st = j + 1
+        end
+    end
+    brk[n] = true
+    local out = {}
+    local start = 1
+    for j = 1, n do
+        if brk[j] then
+            local q = isTanya(t, start, j)
+            for k = start, j do
+                local x = w[k]
+                if k < j then
+                    if ps[k] and not inSet(",.?!;:", lastCh(x)) then x = x .. "," end
+                else
+                    while #x > 1 and inSet(",;:", lastCh(x)) do
+                        x = x:sub(1, -2)
+                    end
+                    local c = lastCh(x)
+                    if not inSet(".?!", c) then
+                        x = x .. (q and "?" or ".")
+                    elseif q and c == "." then
+                        x = x:sub(1, -2) .. "?"
+                    end
+                end
+                out[#out + 1] = x
+            end
+            start = j + 1
+        end
+    end
+    local r = table.concat(out, " ")
+    -- huruf besar sesudah tanda akhir kalimat dan di awal teks
+    local up = true
+    local res = {}
+    for i = 1, #r do
+        local c = r:sub(i, i)
+        if inSet(".?!", c) then
+            up = true
+            res[#res + 1] = c
+        elseif c:match("%s") then
+            res[#res + 1] = c
+        else
+            if up and c:match("%l") then c = c:upper() end
+            up = false
+            res[#res + 1] = c
+        end
+    end
+    return table.concat(res)
+end
+
+local function addPunct(text)
+    local ps = {}
+    for k, v in pairs(pauseAt) do ps[k] = v end
+    local hasil = {}
+    local first = true
+    for line in (text .. "\n"):gmatch("(.-)\n") do
+        if line:match("%S") then
+            -- jeda bicara hanya berlaku untuk baris pertama (urutan kata dari ucapan)
+            hasil[#hasil + 1] = punctLine(line, first and ps or {})
+            first = false
+        else
+            hasil[#hasil + 1] = line
+        end
+    end
+    return table.concat(hasil, "\n")
+end
+-- =======================================================
 
 -- Format teks otomatis
 local function formatText(text)
@@ -1413,6 +1662,9 @@ local function startListening()
             end
             intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
             sessionOffline = preferOffline
+            lastPartial = ""
+            lastPartialAt = 0
+            pauseAt = {}
 
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -1497,6 +1749,12 @@ local function startListening()
                         -- Format tanda baca yang diucapkan
                         cleanText = formatText(cleanText)
 
+                        -- Tanda baca otomatis (bila dicentang di menu)
+                        if isAutoPunctEnabled() then
+                            local okP, hasilP = pcall(addPunct, cleanText)
+                            if okP and hasilP and hasilP ~= "" then cleanText = hasilP end
+                        end
+
                         if targetCode then
                             executeTranslation(cleanText, targetCode, function(translated)
                                 insertText(translated, targetNode)
@@ -1509,6 +1767,14 @@ local function startListening()
                 end,
                 onPartialResults = function(partialResults)
                     handler.removeCallbacks(timeoutRunnable)
+                    if isAutoPunctEnabled() then
+                        pcall(function()
+                            local pr = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if pr and pr.size() > 0 and pr.get(0) then
+                                notePartial(pr.get(0))
+                            end
+                        end)
+                    end
                 end,
                 onEvent = function(eventType, params) end
             })
